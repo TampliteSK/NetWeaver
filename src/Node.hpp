@@ -5,21 +5,23 @@
 
 #include "activations.hpp"
 #include <cstddef>
+#include <array>
 
 template<size_t input_size>
 struct HiddenNode {
-    double input[input_size];
-    double weight[input_size];
+    std::array<double, input_size> input;
+    std::array<double, input_size> weights;
     double bias;
     double output;
     ActFunc activation;
 
-    void compute_output() {
+    double compute_output() {
         int sum = 0;
         for (size_t i = 0; i < input_size; ++i) {
-            sum += input[i] * weight[i];
+            sum += input[i] * weights[i];
         }
         output = activation(sum + bias);
+        return output;
     }
 };
 

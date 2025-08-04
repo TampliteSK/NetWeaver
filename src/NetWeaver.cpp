@@ -1,17 +1,18 @@
 // NetWeaver.cpp
 
-#include "Node.hpp"
+#include "Layer.hpp"
 #include <iostream>
 
 int main(void) {
-    HiddenNode<2> node;
-    node.input[0] = 69;
-    node.input[1] = 420;
-    node.weight[0] = -3;
-    node.weight[1] = 2;
-    node.bias = -1000;
-    node.activation = ReLU;
+    DenseLayer<2, 2> layer;
+    layer.input[0] = -69;
+    layer.input[1] = 420;
+    layer.init_layer(ReLU);
+    layer.forward();
 
-    node.compute_output();
-    std::cout << "Output: " << node.output << "\n";
+    std::cout << "Output: [";
+    for (int i = 0; i < 2; ++i) {
+        std::cout << " " << layer.output[i] << ", ";
+    }
+    std::cout << "]\n";
 }

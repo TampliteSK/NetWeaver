@@ -3,7 +3,9 @@
 #ifndef ACTIVATIONS_HPP
 #define ACTIVATIONS_HPP
 
-typedef double (*ActFunc)(double);
+#include <functional>
+
+using ActFunc = std::function<double(double)>;
 
 // The linear activation (aka do nothing)
 #define LINEAR(x) (x)

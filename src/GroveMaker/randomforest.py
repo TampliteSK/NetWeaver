@@ -2,13 +2,15 @@
 
 import os
 import time
+from datetime import date
+
+import chess
 import numpy as np
 import polars as pl
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import QuantileTransformer
-from joblib import dump, load
 import matplotlib.pyplot as plt 
 
 df = None
@@ -23,53 +25,32 @@ def load_data():
     except Exception as e:
         print(f"Caught exception {e} while loading data")
         return None
-    
-def print_onehot(onehot):
-    idx_to_piece = {
-        0: 'White pawn (P)',
-        1: 'White knight (N)',
-        2: 'White bishop (B)',
-        3: 'White rook (R)',
-        4: 'White queen (Q)',
-        5: 'White king (K)',
-        6: 'Black pawn (p)',
-        7: 'Black knight (n)',
-        8: 'Black bishop (b)',
-        9: 'Black rook (r)',
-        10: 'Black queen (q)',
-        11: 'Black king (k)'
-    }
-    
-    for piece_idx in range(12):
-        print(f"\n{idx_to_piece[piece_idx]}")
-        start = piece_idx * 64
-        end = start + 64
-        piece_bits = onehot[start:end]
-        
-        for rank in range(0, 8):
-            row_start = rank * 8
-            row = piece_bits[row_start : row_start + 8]
-            print("    " + " ".join(str(int(x)) for x in row))
 
-# Convert fen to 768-bit input for random forest training
-def fen_to_onehot(fen: str):
-    onehot = np.zeros(768, dtype=np.uint8)
-    piece_dict = {'P':0, 'N':1, 'B':2, 'R':3, 'Q':4, 'K':5,
-                  'p':6, 'n':7, 'b':8, 'r':9, 'q':10, 'k':11}
+def fen_to_material_array(fen: str):
+    # Material values as provided
+    material = {'P':1, 'N':3, 'B':3, 'R':5, 'Q':9, 'K':0,
+                'p':-1, 'n':-3, 'b':-3, 'r':-5, 'q':-9, 'k':0}
     
-    parts = fen.split()
-    rows = parts[0].split('/')
+    # Initialize 64-element array for board squares (a1=0, a2=8, ..., h8=63)
+    encoding = np.zeros(64 + 6, dtype=np.float32)  # +6 for additional features
     
-    square = 0
-    for row in rows:
-        for c in row:
-            if c.isdigit():
-                square += int(c)
-            else:
-                idx = piece_dict[c] * 64 + square
-                onehot[idx] = 1.0
-                square += 1
-    return onehot
+    # Parse FEN
+    board = chess.Board(fen)
+    
+    # Fill board squares with material values
+    for square, piece in board.piece_map().items():
+        encoding[square] = material[piece.symbol()]
+    
+    # Side to move
+    encoding[64] = 1 if board.turn == chess.WHITE else -1
+    
+    return encoding
+
+
+def normalise_centipawns(arr):
+    clipped = np.clip(arr, -1500, 1500)
+    arr = (arr + 1500) / 3000
+    return arr
 
 def main():
     global df
@@ -80,27 +61,23 @@ def main():
     
     checkpoint = time.time()
     df = load_data()
-    print(f"Data loaded in {time.time() - checkpoint:.2f}s")
+    print(f"Data loaded with {len(df)} entries in {time.time() - checkpoint:.2f}s")
     # print(df)
 
     checkpoint = time.time()
-    X = np.array([fen_to_onehot(fen) for fen in df["FEN"]])  # Input (in 768 onehot encoding)
-    y_raw = np.clip(df["Analysis"].to_numpy(), -1000, 1000)
-    qt = QuantileTransformer(
-        n_quantiles=1000,
-        output_distribution='normal',  # Forces Gaussian shape
-        random_state=42
-    )
-    qt.fit(y_raw.reshape(-1, 1))
-    y = qt.transform(y_raw.reshape(-1, 1)).flatten()
+    X = np.array([fen_to_material_array(fen) for fen in df["FEN"]])  # Input (in 768 onehot encoding)
+    y_raw = df["Analysis"].to_numpy()
+    y = normalise_centipawns(y_raw)
+    # y = y_raw
     
     """
-    print(f"Evaluation stats - Min: {y.min():.3f}, Max: {y.max():.3f}, Mean: {y.mean():.3f}")
+    print(f"Evaluation stats - Min: {y.min():.3f}, Max: {y.max():.3f}, Mean: {y.mean():.3f}, STDEV: {y.std():.3f}")
     plt.hist(y, bins=50)
     plt.title("Normalized Evaluation Distribution")
     plt.show()
     return
     """
+ 
     print(f"Data converted in {time.time() - checkpoint:.2f}s")
 
     # Split data train/test 80/20
@@ -111,14 +88,17 @@ def main():
     print(f"Data split in {time.time() - checkpoint:.2f}s")
 
     # Train model
+    TREES = 300
+    DEPTH = 20
+    LR = 0.2
     params = {
-        'max_depth': 8,                  
-        'learning_rate': 0.05,            
-        'objective': 'reg:pseudohubererror',             
-        'subsample': 0.8,                # Randomly sample 80% of data
-        'colsample_bytree': 0.8,         # Randomly sample 80% of features
-        'reg_alpha': 0.5,                # L1 regularization
-        'reg_lambda': 1.5,               # L2 regularization
+        'max_depth': DEPTH,                  
+        'learning_rate': LR,            
+        'objective': 'reg:squarederror',             
+        'subsample': 0.6,                # Randomly sample 80% of data
+        'colsample_bytree': 0.6,         # Randomly sample 80% of features
+        'reg_alpha': 3,                # L1 regularization
+        'reg_lambda': 10,               # L2 regularization
         'gamma': 0.1,                    # Minimum loss reduction
         'min_child_weight': 3,
         'tree_method': 'hist',         
@@ -133,9 +113,9 @@ def main():
     model = xgb.train(
         params,
         dtrain,
-        num_boost_round=300,  # Trees/estimators count
+        num_boost_round=TREES, # Trees/estimators count
         evals=[(dtrain, 'train'), (dtest, 'test')],
-        early_stopping_rounds=50,  # Stop if no improvement for 50 rounds
+        # early_stopping_rounds=int(TREES * 0.3),  # Stop if no improvement after x rounds
         evals_result=evals_result,
         verbose_eval=25
     )
@@ -149,8 +129,13 @@ def main():
     print(f"Test R²: {r2_score(y_test, test_pred):.3f}")
     print(f"Tests completed in {time.time() - checkpoint:.2f}s")
 
+    xgb.plot_importance(model, importance_type='gain', max_num_features=20)
+    plt.tight_layout()
+    plt.show()
+
     checkpoint = time.time()
-    model_name = "XGBforest_100T_D6_20250807.json"
+    fdate = date.today().strftime("%Y%m%d")
+    model_name = f"XGBforest_{TREES}T_D{DEPTH}_LR{LR}_{fdate}.json"
     model.save_model(model_name)  # XGBoost's native format
     print(f"Model saved as {model_name} in {time.time() - checkpoint:.2f}s")
 
